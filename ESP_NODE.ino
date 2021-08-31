@@ -3,7 +3,12 @@
 #include <Wire.h>
 #include <Adafruit_ILI9341.h>
 #include <Adafruit_STMPE610.h>
+#include <EEPROM.h>
+#include <TheThingsNetwork.h>
 
+
+
+#define EEPROM_SIZE 500
 #define IsWithin(x, a, b) ((x>=a)&&(x<=b))
 #define TS_MINX 142
 #define TS_MINY 125
@@ -17,10 +22,33 @@ Adafruit_STMPE610 ts = Adafruit_STMPE610(STMPE_CS);
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 #define Threshold 40 /* Greater the value, more the sensitivity */
 
+// ---------------------------- constants --------------------
+int wakeup_time = 60; // seconds
+const char textLimit = 500;
+// ----------------------------- variables -------------------
 TaskHandle_t Task1;
 long lastTimeTouched = 0;
-int wakeup_time = 3; // seconds
+char MyBuffer[textLimit];
+bool canSend = false;
+String sendingString;
+bool id_not_set = false;
+String ID = "";
 
+// ---------------------------- LoRa ------------------------
+#define loraSerial Serial1
+#define debugSerial Serial
+
+// ABP method
+const char *devAddr = "00000000";
+const char *nwkSKey = "00000000000000000000000000000000";
+const char *appSKey = "00000000000000000000000000000000";
+
+
+#define freqPlan TTN_FP_AS923_925
+
+TheThingsNetwork ttn(loraSerial, debugSerial, freqPlan);
+
+// ---------------------------- keyboard character ----------
 const char Mobile_KB[3][13] PROGMEM = {
   {0, 13, 10, 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P'},
   {1, 12, 9, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L'},
@@ -39,10 +67,22 @@ const char Mobile_SymKeys[3][13] PROGMEM = {
   {5, 8, 5, '.', '\,', '?', '!', '\''}
 };
 
-const char textLimit = 500;
-char MyBuffer[textLimit];
-bool canSend = false;
-String sendingString= "" ;
+// ---------------- functions -----------------
+
+void message(const byte* payload, size_t length, port_t port) {
+  debugSerial.println("-- MESSAGE");
+  debugSerial.print("Received " + String(length) + " bytes on port " + String(port) + ":");
+
+  String in = "";
+  for (int i = 0; i < length; i++) {
+    in += " " + String(payload[i]);
+  }
+  debugSerial.println(in);
+  tft.fillScreen(ILI9341_BLUE);
+  tft.setCursor(21, 195);
+  tft.print(in);
+
+}
 
 void MakeKB_Button(const char type[][13])
 {
@@ -227,7 +267,7 @@ void GetKeyPress(char * textBuffer)
     //Return
     if (TouchButton(270, 190, 35, 25))
     {
-      Serial.println(textBuffer);
+      debugSerial.println(textBuffer);
       // ---------------------------------- send via LORA
       for(int index =0; index< bufIndex; index ++)
       {
@@ -250,12 +290,14 @@ void callback(){
 
 void setup(void)
 {
-  Serial.begin(115200);
+  loraSerial.begin(57600);
+  debugSerial.begin(9600);
+ 
   tft.begin();
   if (!ts.begin())
-    Serial.println(F("Unable to start touchscreen."));
+    debugSerial.println(F("Unable to start touchscreen."));
   else
-    Serial.println(F("Touchscreen started."));
+    debugSerial.println(F("Touchscreen started."));
 
   tft.fillScreen(ILI9341_BLUE);
   // origin = left,top landscape (USB left upper)
@@ -268,6 +310,16 @@ void setup(void)
   //Configure Touchpad as wakeup source
   esp_sleep_enable_touchpad_wakeup();
 
+  EEPROM.begin(EEPROM_SIZE);
+  int string_length = EEPROM.read(0);
+  if (isnan(string_length) && string_length !=0) id_not_set = true;
+  else{
+     ID = EEPROM.readString(1);
+   }
+
+
+  ttn.personalize(devAddr, nwkSKey, appSKey);
+  ttn.onMessage(message);
   xTaskCreatePinnedToCore(
       Task1code, /* Function to implement the task */
       "Task1", /* Name of the task */
@@ -290,7 +342,22 @@ void Task1code( void * parameter) {
 
 void loop()
 {
-//  if(canSend) end via LORA
+  if(canSend && id_not_set) 
+  {
+    ID = sendingString;
+    EEPROM.write(0, (byte)sendingString.length());
+//    EEPROM.writeString(1, sendingString);
+    for(int i =0;i < sendingString.length(); i ++)
+      EEPROM.write(i + 1, sendingString[i]);
+    EEPROM.commit();
+
+  }
+  else if(canSend) 
+  {
+    byte a[sendingString.length()];
+    sendingString.getBytes(a, sendingString.length());
+    ttn.sendBytes(a, sizeof(sendingString));
+  }
 }
 
 
