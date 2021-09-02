@@ -12,7 +12,8 @@ def on_connect(client, userdata, flags, rc):
 def on_message(client, userdata, msg):
     ergebnis = json.loads(msg.payload)
     values = ergebnis['payload_fields']
-    print(values['temperature_1'])
+    to = values['to']
+    m = values['message']
 
 
 
